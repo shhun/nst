@@ -1,285 +1,176 @@
+/*
+*  Copyright (c) 2016 The WebRTC project authors. All Rights Reserved.
+*
+*  Use of this source code is governed by a BSD-style license
+*  that can be found in the LICENSE file in the root of the source
+*  tree.
+*/
+
 'use strict';
 
-// Set up media stream constant and parameters.
+const leftVideo = document.getElementById('localVideo');
+const rightVideo = document.getElementById('remoteVideo');
+const callButton = document.getElementById('callButton');
+callButton.onclick = () => {call();}
 
-// In this codelab, you will be streaming video only: "video: true".
-// Audio will not be streamed because it is set to "audio: false" by default.
-const mediaStreamConstraints = {
-  video: true,
-};
+let stream;
 
-// Set up to exchange only video.
+let pc1;
+let pc2;
 const offerOptions = {
-  offerToReceiveVideo: 1,
+  offerToReceiveAudio: 1,
+  offerToReceiveVideo: 1
 };
 
-// Define initial start time of the call (defined as connection between peers).
-let startTime = null;
+let startTime;
 
-// Define peer connections, streams and video elements.
-const localVideo = document.getElementById('localVideo');
-const remoteVideo = document.getElementById('remoteVideo');
-
-let localStream;
-let remoteStream;
-
-let localPeerConnection;
-let remotePeerConnection;
-
-
-// Define MediaStreams callbacks.
-
-// Sets the MediaStream as the video element src.
-function gotLocalMediaStream(mediaStream) {
-  localVideo.srcObject = mediaStream;
-  localStream = mediaStream;
-  trace('Received local stream.');
-  callButton.disabled = false;  // Enable call button.
+function maybeCreateStream() {
+  if (stream) {
+    return;
+  }
+  if (leftVideo.captureStream) {
+    stream = leftVideo.captureStream();
+    console.log('Captured stream from leftVideo with captureStream',
+      stream);
+  } else if (leftVideo.mozCaptureStream) {
+    stream = leftVideo.mozCaptureStream();
+    console.log('Captured stream from leftVideo with mozCaptureStream()',
+      stream);
+  } else {
+    console.log('captureStream() not supported');
+  }
 }
 
-// Handles error by logging a message to the console.
-function handleLocalMediaStreamError(error) {
-  trace(`navigator.getUserMedia error: ${error.toString()}.`);
+// Video tag capture must be set up after video tracks are enumerated.
+leftVideo.oncanplay = maybeCreateStream;
+if (leftVideo.readyState >= 3) { // HAVE_FUTURE_DATA
+  // Video is already ready to play, call maybeCreateStream in case oncanplay
+  // fired before we registered the event handler.
+  maybeCreateStream();
 }
 
-// Handles remote MediaStream success by adding it as the remoteVideo src.
-function gotRemoteMediaStream(event) {
-  const mediaStream = event.stream;
-  remoteVideo.srcObject = mediaStream;
-  remoteStream = mediaStream;
-  trace('Remote peer connection received remote stream.');
-}
+leftVideo.play();
 
+rightVideo.onloadedmetadata = () => {
+  console.log(`Remote video videoWidth: ${this.videoWidth}px,  videoHeight: ${this.videoHeight}px`);
+};
 
-// Add behavior for video streams.
-
-// Logs a message with the id and size of a video element.
-function logVideoLoaded(event) {
-  const video = event.target;
-  trace(`${video.id} videoWidth: ${video.videoWidth}px, ` +
-        `videoHeight: ${video.videoHeight}px.`);
-}
-
-// Logs a message with the id and size of a video element.
-// This event is fired when video begins streaming.
-function logResizedVideo(event) {
-  logVideoLoaded(event);
-
+rightVideo.onresize = () => {
+  console.log(`Remote video size changed to ${rightVideo.videoWidth}x${rightVideo.videoHeight}`);
+  // We'll use the first onresize callback as an indication that
+  // video has started playing out.
   if (startTime) {
     const elapsedTime = window.performance.now() - startTime;
+    console.log('Setup time: ' + elapsedTime.toFixed(3) + 'ms');
     startTime = null;
-    trace(`Setup time: ${elapsedTime.toFixed(3)}ms.`);
   }
-}
-
-localVideo.addEventListener('loadedmetadata', logVideoLoaded);
-remoteVideo.addEventListener('loadedmetadata', logVideoLoaded);
-remoteVideo.addEventListener('onresize', logResizedVideo);
-
-
-// Define RTC peer connection behavior.
-
-// Connects with new peer candidate.
-function handleConnection(event) {
-  const peerConnection = event.target;
-  const iceCandidate = event.candidate;
-
-  if (iceCandidate) {
-    const newIceCandidate = new RTCIceCandidate(iceCandidate);
-    const otherPeer = getOtherPeer(peerConnection);
-
-    otherPeer.addIceCandidate(newIceCandidate)
-      .then(() => {
-        handleConnectionSuccess(peerConnection);
-      }).catch((error) => {
-        handleConnectionFailure(peerConnection, error);
-      });
-
-    trace(`${getPeerName(peerConnection)} ICE candidate:\n` +
-          `${event.candidate.candidate}.`);
-  }
-}
-
-// Logs that the connection succeeded.
-function handleConnectionSuccess(peerConnection) {
-  trace(`${getPeerName(peerConnection)} addIceCandidate success.`);
 };
 
-// Logs that the connection failed.
-function handleConnectionFailure(peerConnection, error) {
-  trace(`${getPeerName(peerConnection)} failed to add ICE Candidate:\n`+
-        `${error.toString()}.`);
-}
-
-// Logs changes to the connection state.
-function handleConnectionChange(event) {
-  const peerConnection = event.target;
-  console.log('ICE state change event: ', event);
-  trace(`${getPeerName(peerConnection)} ICE state: ` +
-        `${peerConnection.iceConnectionState}.`);
-}
-
-// Logs error when setting session description fails.
-function setSessionDescriptionError(error) {
-  trace(`Failed to create session description: ${error.toString()}.`);
-}
-
-// Logs success when setting session description.
-function setDescriptionSuccess(peerConnection, functionName) {
-  const peerName = getPeerName(peerConnection);
-  trace(`${peerName} ${functionName} complete.`);
-}
-
-// Logs success when localDescription is set.
-function setLocalDescriptionSuccess(peerConnection) {
-  setDescriptionSuccess(peerConnection, 'setLocalDescription');
-}
-
-// Logs success when remoteDescription is set.
-function setRemoteDescriptionSuccess(peerConnection) {
-  setDescriptionSuccess(peerConnection, 'setRemoteDescription');
-}
-
-// Logs offer creation and sets peer connection session descriptions.
-function createdOffer(description) {
-  trace(`Offer from localPeerConnection:\n${description.sdp}`);
-
-  trace('localPeerConnection setLocalDescription start.');
-  localPeerConnection.setLocalDescription(description)
-    .then(() => {
-      setLocalDescriptionSuccess(localPeerConnection);
-    }).catch(setSessionDescriptionError);
-
-  trace('remotePeerConnection setRemoteDescription start.');
-  remotePeerConnection.setRemoteDescription(description)
-    .then(() => {
-      setRemoteDescriptionSuccess(remotePeerConnection);
-    }).catch(setSessionDescriptionError);
-
-  trace('remotePeerConnection createAnswer start.');
-  remotePeerConnection.createAnswer()
-    .then(createdAnswer)
-    .catch(setSessionDescriptionError);
-}
-
-// Logs answer to offer creation and sets peer connection session descriptions.
-function createdAnswer(description) {
-  trace(`Answer from remotePeerConnection:\n${description.sdp}.`);
-
-  trace('remotePeerConnection setLocalDescription start.');
-  remotePeerConnection.setLocalDescription(description)
-    .then(() => {
-      setLocalDescriptionSuccess(remotePeerConnection);
-    }).catch(setSessionDescriptionError);
-
-  trace('localPeerConnection setRemoteDescription start.');
-  localPeerConnection.setRemoteDescription(description)
-    .then(() => {
-      setRemoteDescriptionSuccess(localPeerConnection);
-    }).catch(setSessionDescriptionError);
-}
-
-
-// Define and add behavior to buttons.
-
-// Define action buttons.
-const startButton = document.getElementById('startButton');
-const callButton = document.getElementById('callButton');
-const hangupButton = document.getElementById('hangupButton');
-
-// Set up initial action buttons status: disable call and hangup.
-callButton.disabled = true;
-hangupButton.disabled = true;
-
-
-// Handles start button action: creates local MediaStream.
-function startAction() {
-  startButton.disabled = true;
-  navigator.mediaDevices.getUserMedia(mediaStreamConstraints)
-    .then(gotLocalMediaStream).catch(handleLocalMediaStreamError);
-  trace('Requesting local stream.');
-}
-
-// Handles call button action: creates peer connection.
-function callAction() {
-  callButton.disabled = true;
-  hangupButton.disabled = false;
-
-  trace('Starting call.');
+function call() {
+  console.log('Starting call');
   startTime = window.performance.now();
-
-  // Get local media stream tracks.
-  const videoTracks = localStream.getVideoTracks();
-  const audioTracks = localStream.getAudioTracks();
+  const videoTracks = stream.getVideoTracks();
+  const audioTracks = stream.getAudioTracks();
   if (videoTracks.length > 0) {
-    trace(`Using video device: ${videoTracks[0].label}.`);
+    console.log(`Using video device: ${videoTracks[0].label}`);
   }
   if (audioTracks.length > 0) {
-    trace(`Using audio device: ${audioTracks[0].label}.`);
+    console.log(`Using audio device: ${audioTracks[0].label}`);
   }
+  const servers = null;
+  pc1 = new RTCPeerConnection(servers);
+  console.log('Created local peer connection object pc1');
+  pc1.onicecandidate = e => onIceCandidate(pc1, e);
+  pc2 = new RTCPeerConnection(servers);
+  console.log('Created remote peer connection object pc2');
+  pc2.onicecandidate = e => onIceCandidate(pc2, e);
+  pc1.oniceconnectionstatechange = e => onIceStateChange(pc1, e);
+  pc2.oniceconnectionstatechange = e => onIceStateChange(pc2, e);
+  pc2.ontrack = gotRemoteStream;
 
-  const servers = null;  // Allows for RTC server configuration.
+  stream.getTracks().forEach(track => pc1.addTrack(track, stream));
+  console.log('Added local stream to pc1');
 
-  // Create peer connections and add behavior.
-  localPeerConnection = new RTCPeerConnection(servers);
-  trace('Created local peer connection object localPeerConnection.');
-
-  localPeerConnection.addEventListener('icecandidate', handleConnection);
-  localPeerConnection.addEventListener(
-    'iceconnectionstatechange', handleConnectionChange);
-
-  remotePeerConnection = new RTCPeerConnection(servers);
-  trace('Created remote peer connection object remotePeerConnection.');
-
-  remotePeerConnection.addEventListener('icecandidate', handleConnection);
-  remotePeerConnection.addEventListener(
-    'iceconnectionstatechange', handleConnectionChange);
-  remotePeerConnection.addEventListener('addstream', gotRemoteMediaStream);
-
-  // Add local stream to connection and create offer to connect.
-  localPeerConnection.addStream(localStream);
-  trace('Added local stream to localPeerConnection.');
-
-  trace('localPeerConnection createOffer start.');
-  localPeerConnection.createOffer(offerOptions)
-    .then(createdOffer).catch(setSessionDescriptionError);
+  console.log('pc1 createOffer start');
+  pc1.createOffer(onCreateOfferSuccess, onCreateSessionDescriptionError, offerOptions);
 }
 
-// Handles hangup action: ends up call, closes connections and resets peers.
-function hangupAction() {
-  localPeerConnection.close();
-  remotePeerConnection.close();
-  localPeerConnection = null;
-  remotePeerConnection = null;
-  hangupButton.disabled = true;
-  callButton.disabled = false;
-  trace('Ending call.');
+function onCreateSessionDescriptionError(error) {
+  console.log(`Failed to create session description: ${error.toString()}`);
 }
 
-// Add click event handlers for buttons.
-startButton.addEventListener('click', startAction);
-callButton.addEventListener('click', callAction);
-hangupButton.addEventListener('click', hangupAction);
-
-
-// Define helper functions.
-
-// Gets the "other" peer connection.
-function getOtherPeer(peerConnection) {
-  return (peerConnection === localPeerConnection) ?
-      remotePeerConnection : localPeerConnection;
+function onCreateOfferSuccess(desc) {
+  console.log(`Offer from pc1
+${desc.sdp}`);
+  console.log('pc1 setLocalDescription start');
+  pc1.setLocalDescription(desc, () => onSetLocalSuccess(pc1), onSetSessionDescriptionError);
+  console.log('pc2 setRemoteDescription start');
+  pc2.setRemoteDescription(desc, () => onSetRemoteSuccess(pc2), onSetSessionDescriptionError);
+  console.log('pc2 createAnswer start');
+  // Since the 'remote' side has no media stream we need
+  // to pass in the right constraints in order for it to
+  // accept the incoming offer of audio and video.
+  pc2.createAnswer(onCreateAnswerSuccess, onCreateSessionDescriptionError);
 }
 
-// Gets the name of a certain peer connection.
-function getPeerName(peerConnection) {
-  return (peerConnection === localPeerConnection) ?
-      'localPeerConnection' : 'remotePeerConnection';
+function onSetLocalSuccess(pc) {
+  console.log(`${getName(pc)} setLocalDescription complete`);
 }
 
-// Logs an action (text) and the time when it happened on the console.
-function trace(text) {
-  text = text.trim();
-  const now = (window.performance.now() / 1000).toFixed(3);
+function onSetRemoteSuccess(pc) {
+  console.log(`${getName(pc)} setRemoteDescription complete`);
+}
 
-  console.log(now, text);
+function onSetSessionDescriptionError(error) {
+  console.log(`Failed to set session description: ${error.toString()}`);
+}
+
+function gotRemoteStream(event) {
+  if (rightVideo.srcObject !== event.streams[0]) {
+    rightVideo.srcObject = event.streams[0];
+    console.log('pc2 received remote stream', event);
+  }
+}
+
+function onCreateAnswerSuccess(desc) {
+  console.log(`Answer from pc2:
+${desc.sdp}`);
+  console.log('pc2 setLocalDescription start');
+  pc2.setLocalDescription(desc, () => onSetLocalSuccess(pc2), onSetSessionDescriptionError);
+  console.log('pc1 setRemoteDescription start');
+  pc1.setRemoteDescription(desc, () => onSetRemoteSuccess(pc1), onSetSessionDescriptionError);
+}
+
+function onIceCandidate(pc, event) {
+  getOtherPc(pc).addIceCandidate(event.candidate)
+    .then(
+      () => onAddIceCandidateSuccess(pc),
+      err => onAddIceCandidateError(pc, err)
+    );
+  console.log(`${getName(pc)} ICE candidate:
+${event.candidate ?
+    event.candidate.candidate : '(null)'}`);
+}
+
+function onAddIceCandidateSuccess(pc) {
+  console.log(`${getName(pc)} addIceCandidate success`);
+}
+
+function onAddIceCandidateError(pc, error) {
+  console.log(`${getName(pc)} failed to add ICE Candidate: ${error.toString()}`);
+}
+
+function onIceStateChange(pc, event) {
+  if (pc) {
+    console.log(`${getName(pc)} ICE state: ${pc.iceConnectionState}`);
+    console.log('ICE state change event: ', event);
+  }
+}
+
+function getName(pc) {
+  return (pc === pc1) ? 'pc1' : 'pc2';
+}
+
+function getOtherPc(pc) {
+  return (pc === pc1) ? pc2 : pc1;
 }
